@@ -209,7 +209,7 @@ async def on_message(message: discord.Message):
             is_private = True
             content = re.sub(r"^PRIVATE\s+TRYOUT\s*", "", content, flags=re.IGNORECASE)
 
-        pattern = r"^<@!?(\d+)>\s+(special grade \d|semi-grade \d|semi grade \d|grade \d|spg1|sg1|g1|g2|g3|g4)\s+(high|mid|low)\s+(strong|stable|weak)(?:\s+(.*))?$"
+        pattern = r"^<@!?(\d+)>\s+(special grade \d|semi-grade \d|semi grade \d|semi g1|grade \d|spg1|sg1|g1|g2|g3|g4)\s+(high|mid|low)\s+(strong|stable|weak)(?:\s+(.*))?$"
         match = re.match(pattern, content, re.IGNORECASE)
 
         if match:
