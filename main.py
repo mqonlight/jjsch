@@ -36,6 +36,8 @@ BANNER_URL = "https://i.imgur.com/0yNuy7m.gif"
 VERIFIED_ROLE_ID = 1512157707384393781
 TRYOUT_CHANNEL_ID = 1512169195905749132
 TRYOUT_COOLDOWN_ROLE_ID = 1546520792022646824
+BOOSTER_CHANNEL_ID = 1545402811179860088
+BOOSTER_IMAGE_URL = "https://i.imgur.com/0yNuy7m.gif"  # Adjust if you have a specific booster banner URL
 
 ROLE_MAP = {
     # Grades & Aliases
@@ -197,6 +199,32 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
 
 @bot.event
 async def on_message(message: discord.Message):
+    # Detect Server Boosts (System Messages)
+    if message.type in [
+        discord.MessageType.premium_guild_subscription,
+        discord.MessageType.premium_guild_tier_1,
+        discord.MessageType.premium_guild_tier_2,
+        discord.MessageType.premium_guild_tier_3,
+    ]:
+        booster_channel = message.guild.get_channel(BOOSTER_CHANNEL_ID)
+        if booster_channel:
+            c = "<:connector:1545187663273926686>"
+            embed = discord.Embed(
+                title="Thanks for boosting the server! 💎",
+                description=(
+                    f"{c} **Booster:** {message.author.mention} (`@{message.author.name}`)\n"
+                    f"{c} **Picture Perms:** Post images & media in text channels\n"
+                    f"{c} **Custom Role:** Claim your own custom role & color\n"
+                    f"{c} **Nickname:** Change your own server nickname\n"
+                    f"{c} **Private Tryout:** Schedule your Tryout for a time that works for you\n"
+                    f"{c} **Giveaways:** 2x multiplier on all server giveaways\n\n"
+                    f"*Open a ticket to claim your custom role and perks!*"
+                ),
+                color=discord.Color.from_rgb(255, 255, 255)
+            )
+            embed.set_image(url=BANNER_URL)
+            await booster_channel.send(embed=embed)
+
     if message.author.bot:
         return
 
