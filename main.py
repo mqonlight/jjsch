@@ -162,6 +162,8 @@ async def get_roblox_data(username: str):
     async with aiohttp.ClientSession() as session:
         user_url = "https://users.roblox.com/v1/usernames/users"
         async with session.post(user_url, json={"usernames": [username]}) as resp:
+            if resp.status != 200:
+                return None, None
             u_data = await resp.json()
             if not u_data.get("data"):
                 return None, None
@@ -169,8 +171,11 @@ async def get_roblox_data(username: str):
 
         thumb_url = f"https://thumbnails.roblox.com/v1/users/avatar-bust?userIds={user_id}&size=420x420&format=Png"
         async with session.get(thumb_url) as resp:
-            t_data = await resp.json()
-            avatar_url = t_data["data"][0]["imageUrl"]
+            avatar_url = None
+            if resp.status == 200:
+                t_data = await resp.json()
+                if t_data.get("data"):
+                    avatar_url = t_data["data"][0].get("imageUrl")
             
         return avatar_url, user_id
 
@@ -340,32 +345,38 @@ async def on_message(message: discord.Message):
 # --- 6. MODERATION & ROLE PREFIX COMMANDS ---
 
 @bot.command(name="mute")
-async def mute(ctx: commands.Context, member: discord.Member = None, limit: str = None, *, reason: str = "No reason provided"):
+async def mute(ctx: commands.Context, target: str = None, limit: str = None, *, reason: str = "No reason provided"):
     if not check_has_roles(ctx, ALLOWED_MUTE_ROLES):
         await ctx.send("❌ You don't have permission to use this command.")
         return
 
-    # Image 1 Help Display if arguments missing
-    if member is None:
+    if target is None:
         embed = discord.Embed(color=discord.Color.blue())
         embed.description = (
             "**Command: /mute**\n\n"
             "**Description:** Mute a member so they cannot type.\n"
             "**Cooldown:** 3 seconds\n"
             "**Usage:**\n"
-            "/mute [user] [limit] [reason]\n"
+            "/mute [user/id] [limit] [reason]\n"
             "**Example:**\n"
             "/mute @NoobLance 10 Shitposting\n"
-            "/mute User 10m spamming\n"
+            "/mute 123456789012345678 10m spamming\n"
             "/mute NoobLance 1d Too Cool\n"
             "/mute NoobLance 5h He asked for it"
         )
         await ctx.send(embed=embed)
         return
 
-    duration = parse_time(limit) if limit else None
-    if duration:
-        await member.timeout(datetime.timedelta(seconds=duration), reason=reason)
+    # Convert target into Member (supports ID, mention, or name)
+    try:
+        member = await commands.MemberConverter().convert(ctx, target)
+    except commands.BadArgument:
+        await ctx.send("❌ Member not found in this server.")
+        return
+
+    parsed_duration = parse_time(limit) if limit else None
+    if parsed_duration:
+        await member.timeout(datetime.timedelta(seconds=parsed_duration), reason=reason)
         await ctx.send(f"🔇 **{member.display_name}** has been muted for {limit}. Reason: {reason}")
     else:
         full_reason = f"{limit} {reason}".strip() if limit else reason
@@ -373,24 +384,30 @@ async def mute(ctx: commands.Context, member: discord.Member = None, limit: str 
         await ctx.send(f"🔇 **{member.display_name}** has been muted. Reason: {full_reason}")
 
 @bot.command(name="warn")
-async def warn(ctx: commands.Context, member: discord.Member = None, *, reason: str = "No reason provided"):
+async def warn(ctx: commands.Context, target: str = None, *, reason: str = "No reason provided"):
     if not check_has_roles(ctx, ALLOWED_WARN_ROLES):
         await ctx.send("❌ You don't have permission to use this command.")
         return
 
-    # Image 2 Help Display if arguments missing
-    if member is None:
+    if target is None:
         embed = discord.Embed(color=discord.Color.blue())
         embed.description = (
             "**Command: /warn**\n\n"
             "**Description:** Warn a member\n"
             "**Cooldown:** 3 seconds\n"
             "**Usage:**\n"
-            "/warn [user] (reason)\n"
+            "/warn [user/id] (reason)\n"
             "**Example:**\n"
-            "/warn @NoobLance Stop posting lewd images"
+            "/warn @NoobLance Stop posting lewd images\n"
+            "/warn 123456789012345678 Stop spamming"
         )
         await ctx.send(embed=embed)
+        return
+
+    try:
+        member = await commands.MemberConverter().convert(ctx, target)
+    except commands.BadArgument:
+        await ctx.send("❌ Member not found in this server.")
         return
 
     try:
@@ -400,41 +417,50 @@ async def warn(ctx: commands.Context, member: discord.Member = None, *, reason: 
     await ctx.send(f"⚠️ **{member.display_name}** has been warned. Reason: {reason}")
 
 @bot.command(name="ban")
-async def ban(ctx: commands.Context, member: discord.User = None, *, reason: str = "No reason provided"):
+async def ban(ctx: commands.Context, target: str = None, *, reason: str = "No reason provided"):
     if not check_has_roles(ctx, ALLOWED_BAN_ROLES):
         await ctx.send("❌ You don't have permission to use this command.")
         return
 
-    # Image 3 Help Display if arguments missing
-    if member is None:
+    if target is None:
         embed = discord.Embed(color=discord.Color.blue())
         embed.description = (
             "**Command: /ban**\n\n"
-            "**Description:** Ban a member, optional time limit\n"
+            "**Description:** Ban a member by ID or Mention\n"
             "**Cooldown:** 3 seconds\n"
             "**Usage:**\n"
-            "/ban [user] [limit] [reason]\n"
-            "/ban save [user] [limit] [reason]\n"
-            "/ban noappeal [user] [limit] [reason]\n"
+            "/ban [user/id] [reason]\n"
             "**Example:**\n"
-            "/ban bean making bugs\n"
-            "/ban save gin 2d needs to calm down\n"
-            "/ban noappeal piguy dont come back"
+            "/ban @NoobLance making bugs\n"
+            "/ban 123456789012345678 spamming toxic links"
         )
         await ctx.send(embed=embed)
         return
 
-    await ctx.guild.ban(member, reason=reason)
-    await ctx.send(f"🔨 **{member.name}** has been banned. Reason: {reason}")
+    # Convert target into User (fetches user even if they are not in the server)
+    try:
+        user = await commands.UserConverter().convert(ctx, target)
+    except commands.BadArgument:
+        await ctx.send("❌ Invalid user ID or mention provided.")
+        return
+
+    await ctx.guild.ban(user, reason=reason)
+    await ctx.send(f"🔨 **{user.name}** (`{user.id}`) has been banned. Reason: {reason}")
 
 @bot.command(name="role")
-async def role_cmd(ctx: commands.Context, member: discord.Member = None, role: discord.Role = None):
+async def role_cmd(ctx: commands.Context, target: str = None, role: discord.Role = None):
     if not check_has_roles(ctx, ALLOWED_ROLE_COMMAND_ROLES):
         await ctx.send("❌ You don't have permission to use this command.")
         return
 
-    if member is None or role is None:
-        await ctx.send("Usage: `?role @user <role_id_or_mention>`")
+    if target is None or role is None:
+        await ctx.send("Usage: `?role <user_id_or_mention> <role_id_or_mention>`")
+        return
+
+    try:
+        member = await commands.MemberConverter().convert(ctx, target)
+    except commands.BadArgument:
+        await ctx.send("❌ Member not found in this server.")
         return
 
     if role in member.roles:
@@ -474,15 +500,31 @@ async def editsnipe(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 @bot.command(name="pfp")
-async def pfp(ctx: commands.Context, member: discord.Member = None):
-    member = member or ctx.author
+async def pfp(ctx: commands.Context, target: str = None):
+    if target:
+        try:
+            member = await commands.MemberConverter().convert(ctx, target)
+        except commands.BadArgument:
+            await ctx.send("❌ Member not found.")
+            return
+    else:
+        member = ctx.author
+
     embed = discord.Embed(title=f"{member.display_name}'s Avatar", color=discord.Color.blue())
     embed.set_image(url=member.display_avatar.url)
     await ctx.send(embed=embed)
 
 @bot.command(name="banner")
-async def banner(ctx: commands.Context, member: discord.Member = None):
-    member = member or ctx.author
+async def banner(ctx: commands.Context, target: str = None):
+    if target:
+        try:
+            member = await commands.MemberConverter().convert(ctx, target)
+        except commands.BadArgument:
+            await ctx.send("❌ Member not found.")
+            return
+    else:
+        member = ctx.author
+
     user = await bot.fetch_user(member.id)
     if not user.banner:
         await ctx.send(f"{member.display_name} doesn't have a banner!")
@@ -522,7 +564,7 @@ async def embed(ctx: commands.Context, title: str, *, message: str):
 @bot.tree.command(name="register", description="Register your Roblox profile")
 async def register(interaction: discord.Interaction, roblox_username: str, region: str, country: str, clan: str = "None"):
     await interaction.response.defer()
-    roblox_id, avatar_url = await get_roblox_data(roblox_username)
+    avatar_url, roblox_id = await get_roblox_data(roblox_username)
     if not roblox_id:
         await interaction.followup.send("❌ Invalid Roblox username.", ephemeral=True)
         return
