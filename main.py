@@ -29,7 +29,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="+", intents=intents)
+bot = commands.Bot(command_prefix=["+", "?"], intents=intents)
 
 # Configuration Constants
 BANNER_URL = "https://i.imgur.com/0yNuy7m.gif"
@@ -37,7 +37,23 @@ VERIFIED_ROLE_ID = 1512157707384393781
 TRYOUT_CHANNEL_ID = 1512169195905749132
 TRYOUT_COOLDOWN_ROLE_ID = 1546520792022646824
 BOOSTER_CHANNEL_ID = 1545402811179860088
-BOOSTER_IMAGE_URL = "https://i.imgur.com/0yNuy7m.gif"  # Adjust if you have a specific booster banner URL
+BOOSTER_IMAGE_URL = "https://i.imgur.com/0yNuy7m.gif"
+
+# --- PERMISSION ROLE IDS (Add up to 10+ Role IDs for each) ---
+ALLOWED_MUTE_ROLES = [1512168816275361882, 1512168817705357492, 1512168803578937354]
+ALLOWED_WARN_ROLES = [1512168816275361882, 1512168817705357492, 1512168803578937354]
+ALLOWED_BAN_ROLES = [1512168798315221132, 222222222222222222, 333333333333333333]
+ALLOWED_ROLE_COMMAND_ROLES = [2222222222222, 222222222222222222, 333333333333333333]
+
+# Achievement Role Map (Role ID -> Achievement Details)
+ACHIEVEMENT_ROLES = {
+    1512168949410697257: {
+        "title": "Special Grade 1!",
+        "rarity": "1%",
+        "description": "Receive the Second Best Grade",
+        "image_url": "https://preview.redd.it/couldnt-sukuna-use-his-flames-in-other-ways-v0-wemf6a96yu6e1.jpeg?auto=webp&s=fee938a51d9544a98bd1a2f3663a97ca3f40add2"
+    }
+}
 
 ROLE_MAP = {
     # Grades & Aliases
@@ -120,6 +136,28 @@ CREATE TABLE IF NOT EXISTS cooldowns (
 conn_cd.commit()
 
 # --- 4. HELPER FUNCTIONS ---
+def check_has_roles(ctx, role_ids):
+    if ctx.author.guild_permissions.administrator:
+        return True
+    return any(r.id in role_ids for r in ctx.author.roles)
+
+def parse_time(time_str: str) -> int:
+    """Parses strings like 10m, 1d, 5h into seconds."""
+    match = re.match(r"^(\d+)([smhd])?$", time_str.lower())
+    if not match:
+        return None
+    val, unit = match.groups()
+    val = int(val)
+    if unit == "s" or not unit:
+        return val
+    elif unit == "m":
+        return val * 60
+    elif unit == "h":
+        return val * 3600
+    elif unit == "d":
+        return val * 86400
+    return None
+
 async def get_roblox_data(username: str):
     async with aiohttp.ClientSession() as session:
         user_url = "https://users.roblox.com/v1/usernames/users"
@@ -177,6 +215,27 @@ async def on_ready():
     await restore_pending_cooldowns()
 
 @bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    # Check for newly added roles
+    added_roles = set(after.roles) - set(before.roles)
+    for role in added_roles:
+        if role.id in ACHIEVEMENT_ROLES:
+            ach = ACHIEVEMENT_ROLES[role.id]
+            
+            # Send DM to Member
+            try:
+                dm_embed = discord.Embed(
+                    title=f"GG {after.display_name}, you just unlocked the achievement: {ach['title']} ({after.guild.name})",
+                    color=discord.Color.blue()
+                )
+                dm_embed.add_field(name="ACHIEVEMENT UNLOCKED!", value=f"**{ach['title']}**\n`{ach['rarity']}` • {ach['description']}", inline=False)
+                if ach.get("image_url"):
+                    dm_embed.set_image(url=ach["image_url"])
+                await after.send(content=f"GG {after.mention}, you just unlocked the achievement: **{ach['title']}**!", embed=dm_embed)
+            except Exception as e:
+                print(f"Could not DM user {after}: {e}")
+
+@bot.event
 async def on_message_delete(message: discord.Message):
     if message.author.bot or not message.content:
         return
@@ -199,7 +258,7 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Detect Server Boosts (System Messages)
+    # Detect Server Boosts
     if message.type in [
         discord.MessageType.premium_guild_subscription,
         discord.MessageType.premium_guild_tier_1,
@@ -278,7 +337,120 @@ async def on_message(message: discord.Message):
 
     await bot.process_commands(message)
 
-# --- 6. UTILITY PREFIX COMMANDS (+ prefix) ---
+# --- 6. MODERATION & ROLE PREFIX COMMANDS ---
+
+@bot.command(name="mute")
+async def mute(ctx: commands.Context, member: discord.Member = None, limit: str = None, *, reason: str = "No reason provided"):
+    if not check_has_roles(ctx, ALLOWED_MUTE_ROLES):
+        await ctx.send("❌ You don't have permission to use this command.")
+        return
+
+    # Image 1 Help Display if arguments missing
+    if member is None:
+        embed = discord.Embed(color=discord.Color.blue())
+        embed.description = (
+            "**Command: /mute**\n\n"
+            "**Description:** Mute a member so they cannot type.\n"
+            "**Cooldown:** 3 seconds\n"
+            "**Usage:**\n"
+            "/mute [user] [limit] [reason]\n"
+            "**Example:**\n"
+            "/mute @NoobLance 10 Shitposting\n"
+            "/mute User 10m spamming\n"
+            "/mute NoobLance 1d Too Cool\n"
+            "/mute NoobLance 5h He asked for it"
+        )
+        await ctx.send(embed=embed)
+        return
+
+    duration = parse_time(limit) if limit else None
+    if duration:
+        await member.timeout(datetime.timedelta(seconds=duration), reason=reason)
+        await ctx.send(f"🔇 **{member.display_name}** has been muted for {limit}. Reason: {reason}")
+    else:
+        full_reason = f"{limit} {reason}".strip() if limit else reason
+        await member.timeout(datetime.timedelta(days=28), reason=full_reason)
+        await ctx.send(f"🔇 **{member.display_name}** has been muted. Reason: {full_reason}")
+
+@bot.command(name="warn")
+async def warn(ctx: commands.Context, member: discord.Member = None, *, reason: str = "No reason provided"):
+    if not check_has_roles(ctx, ALLOWED_WARN_ROLES):
+        await ctx.send("❌ You don't have permission to use this command.")
+        return
+
+    # Image 2 Help Display if arguments missing
+    if member is None:
+        embed = discord.Embed(color=discord.Color.blue())
+        embed.description = (
+            "**Command: /warn**\n\n"
+            "**Description:** Warn a member\n"
+            "**Cooldown:** 3 seconds\n"
+            "**Usage:**\n"
+            "/warn [user] (reason)\n"
+            "**Example:**\n"
+            "/warn @NoobLance Stop posting lewd images"
+        )
+        await ctx.send(embed=embed)
+        return
+
+    try:
+        await member.send(f"⚠️ You have been warned in **{ctx.guild.name}**. Reason: {reason}")
+    except Exception:
+        pass
+    await ctx.send(f"⚠️ **{member.display_name}** has been warned. Reason: {reason}")
+
+@bot.command(name="ban")
+async def ban(ctx: commands.Context, member: discord.User = None, *, reason: str = "No reason provided"):
+    if not check_has_roles(ctx, ALLOWED_BAN_ROLES):
+        await ctx.send("❌ You don't have permission to use this command.")
+        return
+
+    # Image 3 Help Display if arguments missing
+    if member is None:
+        embed = discord.Embed(color=discord.Color.blue())
+        embed.description = (
+            "**Command: /ban**\n\n"
+            "**Description:** Ban a member, optional time limit\n"
+            "**Cooldown:** 3 seconds\n"
+            "**Usage:**\n"
+            "/ban [user] [limit] [reason]\n"
+            "/ban save [user] [limit] [reason]\n"
+            "/ban noappeal [user] [limit] [reason]\n"
+            "**Example:**\n"
+            "/ban bean making bugs\n"
+            "/ban save gin 2d needs to calm down\n"
+            "/ban noappeal piguy dont come back"
+        )
+        await ctx.send(embed=embed)
+        return
+
+    await ctx.guild.ban(member, reason=reason)
+    await ctx.send(f"🔨 **{member.name}** has been banned. Reason: {reason}")
+
+@bot.command(name="role")
+async def role_cmd(ctx: commands.Context, member: discord.Member = None, role: discord.Role = None):
+    if not check_has_roles(ctx, ALLOWED_ROLE_COMMAND_ROLES):
+        await ctx.send("❌ You don't have permission to use this command.")
+        return
+
+    if member is None or role is None:
+        await ctx.send("Usage: `?role @user <role_id_or_mention>`")
+        return
+
+    if role in member.roles:
+        await member.remove_roles(role)
+        action = "Removed"
+    else:
+        await member.add_roles(role)
+        action = "Added"
+
+    embed = discord.Embed(
+        description=f"✅ {action} role {role.mention} from **{member.name}**",
+        color=discord.Color.dark_gray()
+    )
+    await ctx.send(embed=embed)
+
+# --- 7. UTILITY PREFIX COMMANDS (+ prefix) ---
 @bot.command(name="snipe")
 async def snipe(ctx: commands.Context):
     sniped = sniped_messages.get(ctx.channel.id)
@@ -346,7 +518,7 @@ async def embed(ctx: commands.Context, title: str, *, message: str):
     await ctx.message.delete()
     await ctx.send(embed=embed_msg)
 
-# --- 7. INDEX & LEADERBOARD SLASH COMMANDS (/ prefix) ---
+# --- 8. INDEX & LEADERBOARD SLASH COMMANDS (/ prefix) ---
 @bot.tree.command(name="register", description="Register your Roblox profile")
 async def register(interaction: discord.Interaction, roblox_username: str, region: str, country: str, clan: str = "None"):
     await interaction.response.defer()
@@ -432,7 +604,7 @@ async def remove_player(interaction: discord.Interaction, position: int):
     reindex_leaderboard()
     await interaction.response.send_message(f"Removed player at rank #{position}.", ephemeral=True)
 
-# --- 8. START BOT ---
+# --- 9. START BOT ---
 keep_alive()
 token = os.environ.get("DISCORD_TOKEN") or os.environ.get("UTILITY_TOKEN")
 bot.run(token)
