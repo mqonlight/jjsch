@@ -549,7 +549,7 @@ async def unlock(ctx: commands.Context):
 async def embed(ctx: commands.Context, title: str, *, message: str):
     embed_msg = discord.Embed(title=title, description=message, color=discord.Color.blue())
     await ctx.message.delete()
-    await ctx.send(embed_msg)
+    await ctx.send(embed=embed_msg)
 
 # --- 8. INDEX & LEADERBOARD SLASH COMMANDS ---
 @bot.tree.command(name="register", description="Register your Roblox profile")
@@ -596,7 +596,6 @@ async def view_player(interaction: discord.Interaction, user: discord.Member):
 @bot.tree.command(name="leaderboard", description="Display the current leaderboard (Top 20)")
 async def show_leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
-    # Query ranks 1 through 20 specifically
     cursor_lb.execute("SELECT position, display_name, discord_id, roblox_username, region, grade FROM leaderboard WHERE position BETWEEN 1 AND 20 ORDER BY position ASC")
     players = cursor_lb.fetchall()
     if not players:
@@ -637,6 +636,27 @@ async def remove_player(interaction: discord.Interaction, position: int):
     conn_lb.commit()
     reindex_leaderboard()
     await interaction.response.send_message(f"Removed player at rank #{position}.", ephemeral=True)
+
+@bot.tree.command(name="swap_players", description="Admin: Swap the positions of two players on the leaderboard")
+@commands.has_permissions(administrator=True)
+async def swap_players(interaction: discord.Interaction, pos1: int, pos2: int):
+    await interaction.response.defer(ephemeral=True)
+
+    cursor_lb.execute("SELECT rowid, display_name FROM leaderboard WHERE position = ?", (pos1,))
+    p1 = cursor_lb.fetchone()
+
+    cursor_lb.execute("SELECT rowid, display_name FROM leaderboard WHERE position = ?", (pos2,))
+    p2 = cursor_lb.fetchone()
+
+    if not p1 or not p2:
+        await interaction.followup.send("❌ One or both position numbers were not found on the leaderboard.")
+        return
+
+    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE rowid = ?", (pos2, p1[0]))
+    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE rowid = ?", (pos1, p2[0]))
+    conn_lb.commit()
+
+    await interaction.followup.send(f"🔄 Swapped **#{pos1} ({p1[1]})** with **#{pos2} ({p2[1]})**!")
 
 # --- 9. START BOT ---
 keep_alive()
