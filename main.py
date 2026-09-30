@@ -39,13 +39,13 @@ TRYOUT_COOLDOWN_ROLE_ID = 1546520792022646824
 BOOSTER_CHANNEL_ID = 1545402811179860088
 BOOSTER_IMAGE_URL = "https://i.imgur.com/0yNuy7m.gif"
 
-# --- PERMISSION ROLE IDS (Add up to 10+ Role IDs for each) ---
+# --- PERMISSION ROLE IDS ---
 ALLOWED_MUTE_ROLES = [1512168816275361882, 1512168817705357492, 1512168803578937354]
 ALLOWED_WARN_ROLES = [1512168816275361882, 1512168817705357492, 1512168803578937354]
 ALLOWED_BAN_ROLES = [1512168798315221132, 222222222222222222, 333333333333333333]
 ALLOWED_ROLE_COMMAND_ROLES = [2222222222222, 222222222222222222, 333333333333333333]
 
-# Achievement Role Map (Role ID -> Achievement Details)
+# Achievement Role Map
 ACHIEVEMENT_ROLES = {
     1512168949410697257: {
         "title": "Special Grade 1!",
@@ -142,7 +142,6 @@ def check_has_roles(ctx, role_ids):
     return any(r.id in role_ids for r in ctx.author.roles)
 
 def parse_time(time_str: str) -> int:
-    """Parses strings like 10m, 1d, 5h into seconds."""
     match = re.match(r"^(\d+)([smhd])?$", time_str.lower())
     if not match:
         return None
@@ -221,13 +220,10 @@ async def on_ready():
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
-    # Check for newly added roles
     added_roles = set(after.roles) - set(before.roles)
     for role in added_roles:
         if role.id in ACHIEVEMENT_ROLES:
             ach = ACHIEVEMENT_ROLES[role.id]
-            
-            # Send DM to Member
             try:
                 dm_embed = discord.Embed(
                     title=f"GG {after.display_name}, you just unlocked the achievement: {ach['title']} ({after.guild.name})",
@@ -263,7 +259,6 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Detect Server Boosts
     if message.type in [
         discord.MessageType.premium_guild_subscription,
         discord.MessageType.premium_guild_tier_1,
@@ -292,7 +287,6 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # JJSCH Grading System
     if message.channel.id == TRYOUT_CHANNEL_ID:
         content = message.content.strip()
         is_private = False
@@ -343,7 +337,6 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 # --- 6. MODERATION & ROLE PREFIX COMMANDS ---
-
 @bot.command(name="mute")
 async def mute(ctx: commands.Context, target: str = None, limit: str = None, *, reason: str = "No reason provided"):
     if not check_has_roles(ctx, ALLOWED_MUTE_ROLES):
@@ -367,7 +360,6 @@ async def mute(ctx: commands.Context, target: str = None, limit: str = None, *, 
         await ctx.send(embed=embed)
         return
 
-    # Convert target into Member (supports ID, mention, or name)
     try:
         member = await commands.MemberConverter().convert(ctx, target)
     except commands.BadArgument:
@@ -437,7 +429,6 @@ async def ban(ctx: commands.Context, target: str = None, *, reason: str = "No re
         await ctx.send(embed=embed)
         return
 
-    # Convert target into User (fetches user even if they are not in the server)
     try:
         user = await commands.UserConverter().convert(ctx, target)
     except commands.BadArgument:
@@ -476,7 +467,7 @@ async def role_cmd(ctx: commands.Context, target: str = None, role: discord.Role
     )
     await ctx.send(embed=embed)
 
-# --- 7. UTILITY PREFIX COMMANDS (+ prefix) ---
+# --- 7. UTILITY PREFIX COMMANDS ---
 @bot.command(name="snipe")
 async def snipe(ctx: commands.Context):
     sniped = sniped_messages.get(ctx.channel.id)
@@ -558,9 +549,9 @@ async def unlock(ctx: commands.Context):
 async def embed(ctx: commands.Context, title: str, *, message: str):
     embed_msg = discord.Embed(title=title, description=message, color=discord.Color.blue())
     await ctx.message.delete()
-    await ctx.send(embed=embed_msg)
+    await ctx.send(embed_msg)
 
-# --- 8. INDEX & LEADERBOARD SLASH COMMANDS (/ prefix) ---
+# --- 8. INDEX & LEADERBOARD SLASH COMMANDS ---
 @bot.tree.command(name="register", description="Register your Roblox profile")
 async def register(interaction: discord.Interaction, roblox_username: str, region: str, country: str, clan: str = "None"):
     await interaction.response.defer()
@@ -602,10 +593,11 @@ async def view_player(interaction: discord.Interaction, user: discord.Member):
         embed.set_thumbnail(url=avatar_url)
     await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="leaderboard", description="Display the current leaderboard")
+@bot.tree.command(name="leaderboard", description="Display the current leaderboard (Top 20)")
 async def show_leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
-    cursor_lb.execute("SELECT position, display_name, discord_id, roblox_username, region, grade FROM leaderboard ORDER BY position ASC")
+    # Query ranks 1 through 20 specifically
+    cursor_lb.execute("SELECT position, display_name, discord_id, roblox_username, region, grade FROM leaderboard WHERE position BETWEEN 1 AND 20 ORDER BY position ASC")
     players = cursor_lb.fetchall()
     if not players:
         await interaction.followup.send("Leaderboard is currently empty.")
@@ -627,7 +619,7 @@ async def show_leaderboard(interaction: discord.Interaction):
             embed.set_image(url=BANNER_URL)
         await interaction.channel.send(embed=embed)
 
-    await interaction.followup.send("Leaderboard posted successfully!", ephemeral=True)
+    await interaction.followup.send("Leaderboard (1-20) posted successfully!", ephemeral=True)
 
 @bot.tree.command(name="add_player", description="Admin: Add a player to the leaderboard")
 @commands.has_permissions(administrator=True)
