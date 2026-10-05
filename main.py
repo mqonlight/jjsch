@@ -549,7 +549,7 @@ async def unlock(ctx: commands.Context):
 async def embed(ctx: commands.Context, title: str, *, message: str):
     embed_msg = discord.Embed(title=title, description=message, color=discord.Color.blue())
     await ctx.message.delete()
-    await ctx.send(embed=embed_msg)
+    await ctx.send(embed_msg)
 
 # --- 8. INDEX & LEADERBOARD SLASH COMMANDS ---
 @bot.tree.command(name="register", description="Register your Roblox profile")
@@ -642,6 +642,10 @@ async def remove_player(interaction: discord.Interaction, position: int):
 async def swap_players(interaction: discord.Interaction, pos1: int, pos2: int):
     await interaction.response.defer(ephemeral=True)
 
+    if pos1 == pos2:
+        await interaction.followup.send("❌ Position 1 and Position 2 cannot be the same!")
+        return
+
     cursor_lb.execute("SELECT rowid, display_name FROM leaderboard WHERE position = ?", (pos1,))
     p1 = cursor_lb.fetchone()
 
@@ -652,8 +656,9 @@ async def swap_players(interaction: discord.Interaction, pos1: int, pos2: int):
         await interaction.followup.send("❌ One or both position numbers were not found on the leaderboard.")
         return
 
-    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE rowid = ?", (pos2, p1[0]))
-    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE rowid = ?", (pos1, p2[0]))
+    cursor_lb.execute("UPDATE leaderboard SET position = -1 WHERE rowid = ?", (p1[0],))
+    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE rowid = ?", (pos2, p2[0]))
+    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE rowid = ?", (pos1, p1[0]))
     conn_lb.commit()
 
     await interaction.followup.send(f"🔄 Swapped **#{pos1} ({p1[1]})** with **#{pos2} ({p2[1]})**!")
