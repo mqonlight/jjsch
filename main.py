@@ -646,22 +646,22 @@ async def swap_players(interaction: discord.Interaction, pos1: int, pos2: int):
         await interaction.followup.send("❌ Position 1 and Position 2 cannot be the same!")
         return
 
-    cursor_lb.execute("SELECT rowid, display_name FROM leaderboard WHERE position = ?", (pos1,))
+    cursor_lb.execute("SELECT display_name FROM leaderboard WHERE position = ?", (pos1,))
     p1 = cursor_lb.fetchone()
 
-    cursor_lb.execute("SELECT rowid, display_name FROM leaderboard WHERE position = ?", (pos2,))
+    cursor_lb.execute("SELECT display_name FROM leaderboard WHERE position = ?", (pos2,))
     p2 = cursor_lb.fetchone()
 
     if not p1 or not p2:
         await interaction.followup.send("❌ One or both position numbers were not found on the leaderboard.")
         return
 
-    cursor_lb.execute("UPDATE leaderboard SET position = -1 WHERE rowid = ?", (p1[0],))
-    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE rowid = ?", (pos2, p2[0]))
-    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE rowid = ?", (pos1, p1[0]))
+    cursor_lb.execute("UPDATE leaderboard SET position = -1 WHERE position = ?", (pos1,))
+    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE position = ?", (pos1, pos2))
+    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE position = -1", (pos2,))
     conn_lb.commit()
 
-    await interaction.followup.send(f"🔄 Swapped **#{pos1} ({p1[1]})** with **#{pos2} ({p2[1]})**!")
+    await interaction.followup.send(f"🔄 Swapped **#{pos1} ({p1[0]})** with **#{pos2} ({p2[0]})**!")
 
 # --- 9. START BOT ---
 keep_alive()
