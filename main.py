@@ -1,6 +1,5 @@
 import os
 import re
-import sqlite3
 import asyncio
 import threading
 import datetime
@@ -8,6 +7,7 @@ import aiohttp
 import discord
 from discord.ext import commands
 from flask import Flask
+from supabase import create_client, Client
 
 # --- 1. FLASK KEEP-ALIVE WEBSERVER ---
 app = Flask("")
@@ -24,7 +24,16 @@ def keep_alive():
     t = threading.Thread(target=run_flask, daemon=True)
     t.start()
 
-# --- 2. DISCORD BOT SETUP ---
+# --- 2. SUPABASE DATABASE SETUP ---
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("⚠️ WARNING: SUPABASE_URL or SUPABASE_KEY is missing from Environment Variables!")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# --- 3. DISCORD BOT SETUP ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -38,7 +47,7 @@ TRYOUT_CHANNEL_ID = 1512169195905749132
 TRYOUT_COOLDOWN_ROLE_ID = 1546520792022646824
 BOOSTER_CHANNEL_ID = 1545402811179860088
 
-# --- PERMISSION ROLE IDS ---
+# Permission Role IDs
 ALLOWED_MUTE_ROLES = [1512168816275361882, 1512168817705357492, 1512168803578937354]
 ALLOWED_WARN_ROLES = [1512168816275361882, 1512168817705357492, 1512168803578937354]
 ALLOWED_BAN_ROLES = [1512168798315221132, 222222222222222222, 333333333333333333]
@@ -56,7 +65,6 @@ ACHIEVEMENT_ROLES = {
 }
 
 ROLE_MAP = {
-    # Grades & Aliases
     "special grade 1": 1512168949410697257,
     "spg1": 1512168949410697257,
     "grade 1": 1548096759048306788,
@@ -71,52 +79,33 @@ ROLE_MAP = {
     "g3": 1548096794142183524,
     "grade 4": 1548096800643088394,
     "g4": 1548096800643088394,
-    # Tiers
     "high": 1512168957799301131,
     "mid": 1512168959938527357,
     "low": 1512168961398145024,
-    # Stability
     "strong": 1512168962509770945,
     "stable": 1512168963575119962,
     "weak": 1512168964422107341,
 }
 ALL_TRYOUT_ROLE_IDS = set(ROLE_MAP.values())
 
-# Global In-Memory Data Caches
 sniped_messages = {}
 edited_messages = {}
-
-# --- 3. DATABASE INITIALIZATION (Cooldowns & Profiles Only) ---
-conn_db = sqlite3.connect("database.db")
-cursor_db = conn_db.cursor()
-cursor_db.execute("""
-CREATE TABLE IF NOT EXISTS players (
-    discord_id INTEGER PRIMARY KEY,
-    roblox_username TEXT,
-    grade TEXT DEFAULT 'Ungraded',
-    region TEXT DEFAULT 'Global',
-    country TEXT DEFAULT 'Unknown',
-    clan_name TEXT DEFAULT 'None'
-)
-""")
-conn_db.commit()
-
-conn_cd = sqlite3.connect("cooldowns.db")
-cursor_cd = conn_cd.cursor()
-cursor_cd.execute("""
-CREATE TABLE IF NOT EXISTS cooldowns (
-    user_id INTEGER PRIMARY KEY,
-    guild_id INTEGER,
-    expiry_timestamp REAL
-)
-""")
-conn_cd.commit()
 
 # --- 4. HELPER FUNCTIONS ---
 def check_has_roles(ctx, role_ids):
     if ctx.author.guild_permissions.administrator:
         return True
     return any(r.id in role_ids for r in ctx.author.roles)
+
+def log_mod_action(action: str, target_id: int, mod_id: int, reason: str):
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    supabase.table("mod_logs").insert({
+        "action": action,
+        "target_id": target_id,
+        "mod_id": mod_id,
+        "reason": reason,
+        "timestamp": timestamp
+    }).execute()
 
 def parse_time(time_str: str) -> int:
     match = re.match(r"^(\d+)([smhd])?$", time_str.lower())
@@ -167,13 +156,15 @@ async def schedule_cooldown_removal(guild_id: int, user_id: int, delay_seconds: 
                     await member.remove_roles(cooldown_role)
                 except Exception as e:
                     print(f"Failed to remove cooldown role: {e}")
-    cursor_cd.execute("DELETE FROM cooldowns WHERE user_id = ?", (user_id,))
-    conn_cd.commit()
+    supabase.table("cooldowns").delete().eq("user_id", user_id).execute()
 
 async def restore_pending_cooldowns():
     now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-    cursor_cd.execute("SELECT user_id, guild_id, expiry_timestamp FROM cooldowns")
-    for user_id, guild_id, expiry in cursor_cd.fetchall():
+    res = supabase.table("cooldowns").select("user_id, guild_id, expiry_timestamp").execute()
+    for row in res.data:
+        user_id = row["user_id"]
+        guild_id = row["guild_id"]
+        expiry = row["expiry_timestamp"]
         remaining = expiry - now
         bot.loop.create_task(schedule_cooldown_removal(guild_id, user_id, max(0, remaining)))
 
@@ -297,16 +288,17 @@ async def on_message(message: discord.Message):
                 duration_seconds = cooldown_days * 86400
                 expiry_timestamp = datetime.datetime.now(datetime.timezone.utc).timestamp() + duration_seconds
 
-                cursor_cd.execute(
-                    "INSERT INTO cooldowns (user_id, guild_id, expiry_timestamp) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET guild_id=excluded.guild_id, expiry_timestamp=excluded.expiry_timestamp",
-                    (member.id, message.guild.id, expiry_timestamp)
-                )
-                conn_cd.commit()
+                supabase.table("cooldowns").upsert({
+                    "user_id": member.id,
+                    "guild_id": message.guild.id,
+                    "expiry_timestamp": expiry_timestamp
+                }).execute()
+
                 bot.loop.create_task(schedule_cooldown_removal(message.guild.id, member.id, duration_seconds))
 
     await bot.process_commands(message)
 
-# --- 6. MODERATION & ROLE PREFIX COMMANDS ---
+# --- 6. MODERATION & ROLE COMMANDS ---
 @bot.command(name="mute")
 async def mute(ctx: commands.Context, target: str = None, limit: str = None, *, reason: str = "No reason provided"):
     if not check_has_roles(ctx, ALLOWED_MUTE_ROLES):
@@ -326,11 +318,34 @@ async def mute(ctx: commands.Context, target: str = None, limit: str = None, *, 
     parsed_duration = parse_time(limit) if limit else None
     if parsed_duration:
         await member.timeout(datetime.timedelta(seconds=parsed_duration), reason=reason)
+        full_reason = f"[{limit}] {reason}"
         await ctx.send(f"🔇 **{member.display_name}** has been muted for {limit}. Reason: {reason}")
     else:
         full_reason = f"{limit} {reason}".strip() if limit else reason
         await member.timeout(datetime.timedelta(days=28), reason=full_reason)
         await ctx.send(f"🔇 **{member.display_name}** has been muted. Reason: {full_reason}")
+
+    log_mod_action("MUTE", member.id, ctx.author.id, full_reason)
+
+@bot.command(name="unmute")
+async def unmute(ctx: commands.Context, target: str = None, *, reason: str = "No reason provided"):
+    if not check_has_roles(ctx, ALLOWED_MUTE_ROLES):
+        await ctx.send("❌ You don't have permission to use this command.")
+        return
+
+    if target is None:
+        await ctx.send("Usage: `+unmute @user [reason]`")
+        return
+
+    try:
+        member = await commands.MemberConverter().convert(ctx, target)
+    except commands.BadArgument:
+        await ctx.send("❌ Member not found in this server.")
+        return
+
+    await member.timeout(None, reason=reason)
+    await ctx.send(f"🔊 **{member.display_name}** has been unmuted. Reason: {reason}")
+    log_mod_action("UNMUTE", member.id, ctx.author.id, reason)
 
 @bot.command(name="warn")
 async def warn(ctx: commands.Context, target: str = None, *, reason: str = "No reason provided"):
@@ -353,6 +368,7 @@ async def warn(ctx: commands.Context, target: str = None, *, reason: str = "No r
     except Exception:
         pass
     await ctx.send(f"⚠️ **{member.display_name}** has been warned. Reason: {reason}")
+    log_mod_action("WARN", member.id, ctx.author.id, reason)
 
 @bot.command(name="kick")
 async def kick(ctx: commands.Context, target: str = None, *, reason: str = "No reason provided"):
@@ -372,6 +388,7 @@ async def kick(ctx: commands.Context, target: str = None, *, reason: str = "No r
 
     await member.kick(reason=reason)
     await ctx.send(f"👢 **{member.name}** has been kicked. Reason: {reason}")
+    log_mod_action("KICK", member.id, ctx.author.id, reason)
 
 @bot.command(name="ban")
 async def ban(ctx: commands.Context, target: str = None, *, reason: str = "No reason provided"):
@@ -391,6 +408,82 @@ async def ban(ctx: commands.Context, target: str = None, *, reason: str = "No re
 
     await ctx.guild.ban(user, reason=reason)
     await ctx.send(f"🔨 **{user.name}** (`{user.id}`) has been banned. Reason: {reason}")
+    log_mod_action("BAN", user.id, ctx.author.id, reason)
+
+@bot.command(name="logs")
+async def user_logs(ctx: commands.Context, target: str = None):
+    if not check_has_roles(ctx, ALLOWED_MUTE_ROLES):
+        await ctx.send("❌ You don't have permission to view logs.")
+        return
+
+    if target is None:
+        await ctx.send("Usage: `+logs @user`")
+        return
+
+    try:
+        user = await commands.UserConverter().convert(ctx, target)
+    except commands.BadArgument:
+        await ctx.send("❌ User not found.")
+        return
+
+    res = supabase.table("mod_logs").select("action, mod_id, reason, timestamp").eq("target_id", user.id).order("log_id", desc=True).limit(15).execute()
+
+    if not res.data:
+        await ctx.send(f"📋 No moderation history found for **{user.name}**.")
+        return
+
+    embed = discord.Embed(
+        title=f"📋 Moderation History for {user.name} (`{user.id}`)",
+        color=discord.Color.red()
+    )
+
+    for row in res.data:
+        mod_user = bot.get_user(row["mod_id"])
+        mod_name = mod_user.mention if mod_user else f"ID: {row['mod_id']}"
+        embed.add_field(
+            name=f"[{row['action']}] — {row['timestamp']}",
+            value=f"**By:** {mod_name}\n**Reason:** {row['reason']}",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="modlogs")
+async def mod_logs_cmd(ctx: commands.Context, target: str = None):
+    if not check_has_roles(ctx, ALLOWED_MUTE_ROLES):
+        await ctx.send("❌ You don't have permission to view staff modlogs.")
+        return
+
+    if target is None:
+        target_user = ctx.author
+    else:
+        try:
+            target_user = await commands.UserConverter().convert(ctx, target)
+        except commands.BadArgument:
+            await ctx.send("❌ Staff member not found.")
+            return
+
+    res = supabase.table("mod_logs").select("action, target_id, reason, timestamp").eq("mod_id", target_user.id).order("log_id", desc=True).limit(15).execute()
+
+    if not res.data:
+        await ctx.send(f"📋 No recorded moderation actions by **{target_user.name}**.")
+        return
+
+    embed = discord.Embed(
+        title=f"🛡️ Staff Mod Action History for {target_user.name}",
+        color=discord.Color.blue()
+    )
+
+    for row in res.data:
+        target_user_obj = bot.get_user(row["target_id"])
+        target_name = target_user_obj.mention if target_user_obj else f"ID: {row['target_id']}"
+        embed.add_field(
+            name=f"[{row['action']}] — {row['timestamp']}",
+            value=f"**Target:** {target_name}\n**Reason:** {row['reason']}",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
 
 @bot.command(name="role")
 async def role_cmd(ctx: commands.Context, target: str = None, role: discord.Role = None):
@@ -503,7 +596,7 @@ async def unlock(ctx: commands.Context):
 async def embed(ctx: commands.Context, title: str, *, message: str):
     embed_msg = discord.Embed(title=title, description=message, color=discord.Color.blue())
     await ctx.message.delete()
-    await ctx.send(embed=embed_msg)
+    await ctx.send(embed_msg)
 
 # --- 8. PROFILE REGISTRATION SLASH COMMANDS ---
 @bot.tree.command(name="register", description="Register your Roblox profile")
@@ -514,11 +607,13 @@ async def register(interaction: discord.Interaction, roblox_username: str, regio
         await interaction.followup.send("❌ Invalid Roblox username.", ephemeral=True)
         return
 
-    cursor_db.execute(
-        "INSERT INTO players (discord_id, roblox_username, region, country, clan_name) VALUES (?, ?, ?, ?, ?) ON CONFLICT(discord_id) DO UPDATE SET roblox_username=excluded.roblox_username, region=excluded.region, country=excluded.country, clan_name=excluded.clan_name",
-        (interaction.user.id, roblox_username, region, country, clan)
-    )
-    conn_db.commit()
+    supabase.table("players").upsert({
+        "discord_id": interaction.user.id,
+        "roblox_username": roblox_username,
+        "region": region,
+        "country": country,
+        "clan_name": clan
+    }).execute()
 
     embed = discord.Embed(title="✅ Registration Successful", color=discord.Color.green())
     embed.add_field(name="Profile Linked", value=f"**{roblox_username}**", inline=False)
@@ -529,13 +624,19 @@ async def register(interaction: discord.Interaction, roblox_username: str, regio
 @bot.tree.command(name="view_player", description="View a player's profile card")
 async def view_player(interaction: discord.Interaction, user: discord.Member):
     await interaction.response.defer()
-    cursor_db.execute("SELECT roblox_username, grade, region, country, clan_name FROM players WHERE discord_id = ?", (user.id,))
-    row = cursor_db.fetchone()
-    if not row:
+    res = supabase.table("players").select("roblox_username, grade, region, country, clan_name").eq("discord_id", user.id).execute()
+    
+    if not res.data:
         await interaction.followup.send("❌ User not registered.", ephemeral=True)
         return
 
-    r_user, grade, region, country, clan_name = row
+    row = res.data[0]
+    r_user = row["roblox_username"]
+    grade = row["grade"]
+    region = row["region"]
+    country = row["country"]
+    clan_name = row["clan_name"]
+
     avatar_url, _ = await get_roblox_data(r_user)
     embed = discord.Embed(title=f"**{r_user}**", color=discord.Color.dark_theme())
     embed.add_field(name="Discord", value=user.mention, inline=False)
