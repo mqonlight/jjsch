@@ -14,7 +14,7 @@ app = Flask("")
 
 @app.route("/")
 def home():
-    return "Unified Discord Bot is alive!"
+    return "Utility Bot is alive!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -37,12 +37,12 @@ VERIFIED_ROLE_ID = 1512157707384393781
 TRYOUT_CHANNEL_ID = 1512169195905749132
 TRYOUT_COOLDOWN_ROLE_ID = 1546520792022646824
 BOOSTER_CHANNEL_ID = 1545402811179860088
-BOOSTER_IMAGE_URL = "https://i.imgur.com/0yNuy7m.gif"
 
 # --- PERMISSION ROLE IDS ---
 ALLOWED_MUTE_ROLES = [1512168816275361882, 1512168817705357492, 1512168803578937354]
 ALLOWED_WARN_ROLES = [1512168816275361882, 1512168817705357492, 1512168803578937354]
 ALLOWED_BAN_ROLES = [1512168798315221132, 222222222222222222, 333333333333333333]
+ALLOWED_KICK_ROLES = [1512168798315221132, 222222222222222222, 333333333333333333]
 ALLOWED_ROLE_COMMAND_ROLES = [2222222222222, 222222222222222222, 333333333333333333]
 
 # Achievement Role Map
@@ -86,7 +86,7 @@ ALL_TRYOUT_ROLE_IDS = set(ROLE_MAP.values())
 sniped_messages = {}
 edited_messages = {}
 
-# --- 3. DATABASE INITIALIZATION ---
+# --- 3. DATABASE INITIALIZATION (Cooldowns & Profiles Only) ---
 conn_db = sqlite3.connect("database.db")
 cursor_db = conn_db.cursor()
 cursor_db.execute("""
@@ -99,30 +99,7 @@ CREATE TABLE IF NOT EXISTS players (
     clan_name TEXT DEFAULT 'None'
 )
 """)
-cursor_db.execute("""
-CREATE TABLE IF NOT EXISTS clans (
-    clan_name TEXT PRIMARY KEY,
-    leader_id INTEGER,
-    region TEXT,
-    clan_points INTEGER DEFAULT 0,
-    logo_url TEXT
-)
-""")
 conn_db.commit()
-
-conn_lb = sqlite3.connect("leaderboard.db")
-cursor_lb = conn_lb.cursor()
-cursor_lb.execute("""
-CREATE TABLE IF NOT EXISTS leaderboard (
-    position INTEGER PRIMARY KEY AUTOINCREMENT,
-    display_name TEXT,
-    discord_id INTEGER,
-    roblox_username TEXT,
-    region TEXT,
-    grade TEXT
-)
-""")
-conn_lb.commit()
 
 conn_cd = sqlite3.connect("cooldowns.db")
 cursor_cd = conn_cd.cursor()
@@ -178,13 +155,6 @@ async def get_roblox_data(username: str):
             
         return avatar_url, user_id
 
-def reindex_leaderboard():
-    cursor_lb.execute("SELECT rowid, * FROM leaderboard ORDER BY position ASC")
-    rows = cursor_lb.fetchall()
-    for index, row in enumerate(rows, start=1):
-        cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE rowid = ?", (index, row[0]))
-    conn_lb.commit()
-
 async def schedule_cooldown_removal(guild_id: int, user_id: int, delay_seconds: float):
     await asyncio.sleep(delay_seconds)
     guild = bot.get_guild(guild_id)
@@ -210,7 +180,7 @@ async def restore_pending_cooldowns():
 # --- 5. BOT EVENTS ---
 @bot.event
 async def on_ready():
-    print(f"Master Utility & Leaderboard Bot ready as {bot.user.name}")
+    print(f"Utility Bot ready as {bot.user.name}")
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} slash command(s).")
@@ -344,20 +314,7 @@ async def mute(ctx: commands.Context, target: str = None, limit: str = None, *, 
         return
 
     if target is None:
-        embed = discord.Embed(color=discord.Color.blue())
-        embed.description = (
-            "**Command: /mute**\n\n"
-            "**Description:** Mute a member so they cannot type.\n"
-            "**Cooldown:** 3 seconds\n"
-            "**Usage:**\n"
-            "/mute [user/id] [limit] [reason]\n"
-            "**Example:**\n"
-            "/mute @NoobLance 10 Shitposting\n"
-            "/mute 123456789012345678 10m spamming\n"
-            "/mute NoobLance 1d Too Cool\n"
-            "/mute NoobLance 5h He asked for it"
-        )
-        await ctx.send(embed=embed)
+        await ctx.send("Usage: `+mute @user [time, e.g. 10m] [reason]`")
         return
 
     try:
@@ -382,18 +339,7 @@ async def warn(ctx: commands.Context, target: str = None, *, reason: str = "No r
         return
 
     if target is None:
-        embed = discord.Embed(color=discord.Color.blue())
-        embed.description = (
-            "**Command: /warn**\n\n"
-            "**Description:** Warn a member\n"
-            "**Cooldown:** 3 seconds\n"
-            "**Usage:**\n"
-            "/warn [user/id] (reason)\n"
-            "**Example:**\n"
-            "/warn @NoobLance Stop posting lewd images\n"
-            "/warn 123456789012345678 Stop spamming"
-        )
-        await ctx.send(embed=embed)
+        await ctx.send("Usage: `+warn @user [reason]`")
         return
 
     try:
@@ -408,6 +354,25 @@ async def warn(ctx: commands.Context, target: str = None, *, reason: str = "No r
         pass
     await ctx.send(f"⚠️ **{member.display_name}** has been warned. Reason: {reason}")
 
+@bot.command(name="kick")
+async def kick(ctx: commands.Context, target: str = None, *, reason: str = "No reason provided"):
+    if not check_has_roles(ctx, ALLOWED_KICK_ROLES):
+        await ctx.send("❌ You don't have permission to use this command.")
+        return
+
+    if target is None:
+        await ctx.send("Usage: `+kick @user [reason]`")
+        return
+
+    try:
+        member = await commands.MemberConverter().convert(ctx, target)
+    except commands.BadArgument:
+        await ctx.send("❌ Member not found in this server.")
+        return
+
+    await member.kick(reason=reason)
+    await ctx.send(f"👢 **{member.name}** has been kicked. Reason: {reason}")
+
 @bot.command(name="ban")
 async def ban(ctx: commands.Context, target: str = None, *, reason: str = "No reason provided"):
     if not check_has_roles(ctx, ALLOWED_BAN_ROLES):
@@ -415,24 +380,13 @@ async def ban(ctx: commands.Context, target: str = None, *, reason: str = "No re
         return
 
     if target is None:
-        embed = discord.Embed(color=discord.Color.blue())
-        embed.description = (
-            "**Command: /ban**\n\n"
-            "**Description:** Ban a member by ID or Mention\n"
-            "**Cooldown:** 3 seconds\n"
-            "**Usage:**\n"
-            "/ban [user/id] [reason]\n"
-            "**Example:**\n"
-            "/ban @NoobLance making bugs\n"
-            "/ban 123456789012345678 spamming toxic links"
-        )
-        await ctx.send(embed=embed)
+        await ctx.send("Usage: `+ban @user [reason]`")
         return
 
     try:
         user = await commands.UserConverter().convert(ctx, target)
     except commands.BadArgument:
-        await ctx.send("❌ Invalid user ID or mention provided.")
+        await ctx.send("❌ Invalid user or ID provided.")
         return
 
     await ctx.guild.ban(user, reason=reason)
@@ -549,9 +503,9 @@ async def unlock(ctx: commands.Context):
 async def embed(ctx: commands.Context, title: str, *, message: str):
     embed_msg = discord.Embed(title=title, description=message, color=discord.Color.blue())
     await ctx.message.delete()
-    await ctx.send(embed_msg)
+    await ctx.send(embed=embed_msg)
 
-# --- 8. INDEX & LEADERBOARD SLASH COMMANDS ---
+# --- 8. PROFILE REGISTRATION SLASH COMMANDS ---
 @bot.tree.command(name="register", description="Register your Roblox profile")
 async def register(interaction: discord.Interaction, roblox_username: str, region: str, country: str, clan: str = "None"):
     await interaction.response.defer()
@@ -592,76 +546,6 @@ async def view_player(interaction: discord.Interaction, user: discord.Member):
     if avatar_url:
         embed.set_thumbnail(url=avatar_url)
     await interaction.followup.send(embed=embed)
-
-@bot.tree.command(name="leaderboard", description="Display the current leaderboard (Top 20)")
-async def show_leaderboard(interaction: discord.Interaction):
-    await interaction.response.defer()
-    cursor_lb.execute("SELECT position, display_name, discord_id, roblox_username, region, grade FROM leaderboard WHERE position BETWEEN 1 AND 20 ORDER BY position ASC")
-    players = cursor_lb.fetchall()
-    if not players:
-        await interaction.followup.send("Leaderboard is currently empty.")
-        return
-
-    for pos, name, d_id, r_user, region, grade in players:
-        avatar_url, roblox_id = await get_roblox_data(r_user)
-        profile_url = f"https://www.roblox.com/users/{roblox_id}/profile" if roblox_id else None
-
-        embed = discord.Embed(
-            title=f"{name} | {pos}.",
-            url=profile_url,
-            description=f"« « | <@{d_id}> (`@{r_user}`) | » »\n**Region:** — {region}\n**Grade:** — {grade}",
-            color=discord.Color.dark_theme()
-        )
-        if avatar_url:
-            embed.set_thumbnail(url=avatar_url)
-        if BANNER_URL:
-            embed.set_image(url=BANNER_URL)
-        await interaction.channel.send(embed=embed)
-
-    await interaction.followup.send("Leaderboard (1-20) posted successfully!", ephemeral=True)
-
-@bot.tree.command(name="add_player", description="Admin: Add a player to the leaderboard")
-@commands.has_permissions(administrator=True)
-async def add_player(interaction: discord.Interaction, display_name: str, user: discord.Member, roblox_username: str, region: str, grade: str):
-    await interaction.response.defer(ephemeral=True)
-    cursor_lb.execute("INSERT INTO leaderboard (display_name, discord_id, roblox_username, region, grade) VALUES (?, ?, ?, ?, ?)", (display_name, user.id, roblox_username, region, grade))
-    conn_lb.commit()
-    reindex_leaderboard()
-    await interaction.followup.send(f"Added **{display_name}** (`{roblox_username}`) to the leaderboard.")
-
-@bot.tree.command(name="remove_player", description="Admin: Remove a player from the leaderboard")
-@commands.has_permissions(administrator=True)
-async def remove_player(interaction: discord.Interaction, position: int):
-    cursor_lb.execute("DELETE FROM leaderboard WHERE position = ?", (position,))
-    conn_lb.commit()
-    reindex_leaderboard()
-    await interaction.response.send_message(f"Removed player at rank #{position}.", ephemeral=True)
-
-@bot.tree.command(name="swap_players", description="Admin: Swap the positions of two players on the leaderboard")
-@commands.has_permissions(administrator=True)
-async def swap_players(interaction: discord.Interaction, pos1: int, pos2: int):
-    await interaction.response.defer(ephemeral=True)
-
-    if pos1 == pos2:
-        await interaction.followup.send("❌ Position 1 and Position 2 cannot be the same!")
-        return
-
-    cursor_lb.execute("SELECT display_name FROM leaderboard WHERE position = ?", (pos1,))
-    p1 = cursor_lb.fetchone()
-
-    cursor_lb.execute("SELECT display_name FROM leaderboard WHERE position = ?", (pos2,))
-    p2 = cursor_lb.fetchone()
-
-    if not p1 or not p2:
-        await interaction.followup.send("❌ One or both position numbers were not found on the leaderboard.")
-        return
-
-    cursor_lb.execute("UPDATE leaderboard SET position = -1 WHERE position = ?", (pos1,))
-    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE position = ?", (pos1, pos2))
-    cursor_lb.execute("UPDATE leaderboard SET position = ? WHERE position = -1", (pos2,))
-    conn_lb.commit()
-
-    await interaction.followup.send(f"🔄 Swapped **#{pos1} ({p1[0]})** with **#{pos2} ({p2[0]})**!")
 
 # --- 9. START BOT ---
 keep_alive()
